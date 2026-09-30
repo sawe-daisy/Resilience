@@ -1,8 +1,8 @@
 """Background jobs, run as a second process: `python -m app.worker`.
 
 Every minute it purges old replay-protection ids. Every 6 hours it re-runs the NIP-05 check
-on approved organisations. Disbursement expiry lands with payments
-(see docs/backend/ARCHITECTURE.md section 8)."""
+on approved organisations. The worker expires abandoned disbursements each minute; payments already
+marked `PAYING` remain pending for wallet/provider reconciliation."""
 
 import logging
 import time
@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.db.models import Organization
 from app.db.session import get_engine
 from app.directory.nip05 import Fetcher, check_nip05, make_fetcher
+from app.payments.service import expire_disbursements
 from app.settings import get_settings
 
 log = logging.getLogger("worker")
@@ -63,8 +64,11 @@ def main() -> None:
             removed = purge_seen_auth_events()
             if removed:
                 log.info("purged %d seen auth events", removed)
+            expired = expire_disbursements()
+            if any(expired.values()):
+                log.info("expired disbursements: %s", expired)
         except Exception:
-            log.exception("purge failed")
+            log.exception("periodic maintenance failed")
         if time.monotonic() - last_nip05 >= NIP05_EVERY_SECONDS:
             try:
                 log.info("nip05 recheck: %s", recheck_nip05())

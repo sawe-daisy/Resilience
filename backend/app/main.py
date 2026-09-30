@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import admin, config, health, orgs, whoami
+from app.routers import admin, config, disbursements, health, orgs, whoami
 from app.settings import get_settings
 
 
@@ -20,6 +20,11 @@ def create_app() -> FastAPI:
     app.include_router(whoami.router)
     app.include_router(orgs.router)
     app.include_router(admin.router)
+    app.include_router(disbursements.router)
+    if settings.app_env == "test":
+        from app.routers import mock_payments
+
+        app.include_router(mock_payments.router)
     return app
 
 

@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import time
+import uuid
 
 import pytest
 
@@ -78,7 +79,9 @@ def auth_header(
     kind: int = 27235,
     payload: str | None = None,
 ) -> dict:
-    tags = [["u", url], ["method", method]]
+    # NIP-98 reads are reusable, but writes are single-use. Give each test request a unique
+    # harmless tag so identical write fixtures do not replay one another within the same second.
+    tags = [["u", url], ["method", method], ["nonce", uuid.uuid4().hex]]
     if payload is not None:
         tags.append(["payload", payload])
     elif body is not None:

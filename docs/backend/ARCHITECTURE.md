@@ -53,7 +53,7 @@ static files on a **separate host**, for the reason in section 5.1.
 | Trusted relay list | Serves it | Signed by the platform key; the client verifies. |
 | Organisations and counsellor rosters | Yes | Index and cache. Clients still verify signatures. |
 | NIP-05 checks on organisations | Yes | Worker job. |
-| Emergency payments | Records only | State machine and proof of payment. Never holds funds. |
+| Emergency payments | Records only | State machine and preimage-hash claim. Never holds funds. |
 | Health records | Not built | Cut from the demo. See section 10. |
 
 ## 4. Stack 
@@ -68,7 +68,7 @@ static files on a **separate host**, for the reason in section 5.1.
 | Images | `python:3.12.14-slim-bookworm`, `postgres:16.15`, `scsibug/nostr-rs-relay:0.10.0`, `caddy:2.11.4-alpine` |
 
 No Redis, no Celery. Background jobs are a few loops in a second process from the same code.
-Later, when invoices arrive: `bolt11` 2.2.0 to decode them.
+BOLT11 invoices are decoded and signature-checked with `bolt11` 2.2.0.
 
 ## 5. The API
 
@@ -172,25 +172,28 @@ Not built yet: the worker pulling rosters and counsellor profiles from the relay
 dashboard sends them to the API), and the platform-signed approved-orgs list for clients to
 verify.
 
-### 5.4 Disbursements: emergency money (next)
+### 5.4 Disbursements: emergency money (built)
 
 The counsellor sends emergency assistance to a survivor. The backend records the disbursement and
-verifies proof of payment. It never holds or transfers the money.
+checks that the submitted preimage hashes to the invoice payment hash. It never holds or transfers
+the money. This check records an authenticated organisation's payment claim; the API does not
+independently observe or verify Lightning settlement.
 
 1. The counsellor creates a disbursement. State `CREATED`.
 2. The survivor's wallet makes a Lightning invoice and sends it back **in the chat**.
 3. The dashboard attaches it. The API decodes it and checks amount, expiry and first use.
    State `INVOICE_ATTACHED`.
 4. The counsellor presses Pay: state `PAYING`, and the organisation's own browser wallet pays.
-5. The wallet returns the **preimage**, which the payer only gets once the money has arrived.
-   The API checks `sha256(preimage) == payment_hash`. State `PAID`.
+5. The payer's wallet returns the **preimage**. The counsellor submits it, and the API checks
+   `sha256(preimage) == payment_hash`. State `PAID` means this authenticated claim had a
+   hash-matching preimage. It is not independent proof of network settlement; that needs a wallet
+   or provider verification integration, which is not included.
 
 ```
-CREATED ──invoice──► INVOICE_ATTACHED ──pay──► PAYING ──valid preimage──► PAID
-   │                        │                     │
-   └──► CANCELLED ◄─────────┤                     │ invoice expired, no proof
-                            └──expired──► EXPIRED ▼
-                                                FAILED ──new invoice──► INVOICE_ATTACHED
+CREATED ──invoice──► INVOICE_ATTACHED ──start──► PAYING ──matching preimage──► PAID
+   │                        │                         │
+   ├──cancel──► CANCELLED  ├──cancel──► CANCELLED   └──expired──► stays PAYING
+   └──24 hours──► EXPIRED  └──invoice expired──► EXPIRED
 ```
 
 Rules that stop paying twice:
@@ -199,17 +202,25 @@ Rules that stop paying twice:
   returns the original; same key with a different body returns 409.
 - Every transition is one statement: `UPDATE ... SET state = :new WHERE id = :id AND state =
   :expected`. Zero rows changed means someone else got there first: 409.
-- `PAYING` never fails on its own. Only a valid preimage (to `PAID`) or the invoice expiring with
-  no proof (to `FAILED`) moves it. After expiry that invoice cannot be paid, so retrying with a
-  fresh invoice is safe.
+- `PAYING` never fails on its own. The worker does not retry or mark it failed on expiry because
+  it cannot tell whether payment settled just before expiry and the proof arrived late. Keep it in
+  `PAYING` until the organisation reconciles it with its wallet/provider; retrying without that check
+  could pay twice. An attached invoice expires automatically only before the counsellor marks it
+  `PAYING`. `FAILED` is reserved for a future wallet/provider result that confirms payment failed;
+  no current route can make that transition.
 - The same valid preimage twice returns 200 with the same result.
-- Per-payment and daily caps per organisation, checked at `CREATED`.
+- Per-payment and daily caps per organisation, checked at `CREATED`. A platform admin configures
+  the caps through `PUT /v1/admin/orgs/{id}/disbursement-limits`. Zero/unset caps block new requests.
+  Pending amounts and paid amounts count toward the daily cap; cancelled, expired, and failed ones do
+  not. The day boundary is midnight in Kenya (Africa/Nairobi). The same idempotency key and body
+  returns the original even when it already reserves the cap.
 - Once final, the invoice string is deleted; only hash, amount and timestamps stay. The
   survivor's pubkey is never stored on a disbursement.
 
-Providers sit behind one interface: a mock provider for tests (with `POST /v1/_mock/settle/...`
-only when `APP_ENV=test`), and a preimage-proof provider for the demo, where the server has no
-wallet at all. No M-Pesa (Daraja) payouts to survivors: they show on her M-Pesa statement.
+In tests, `POST /v1/_mock/settle/{id}` simulates a wallet settlement and is mounted only when
+`APP_ENV=test`. There is no production payment provider or wallet integration yet. The production
+API records the authenticated counsellor's claim after checking the preimage hash. No M-Pesa
+(Daraja) payouts to survivors: they show on her M-Pesa statement.
 
 ### 5.5 Endpoints
 
@@ -224,9 +235,12 @@ wallet at all. No M-Pesa (Daraja) payouts to survivors: they show on her M-Pesa 
 | `PUT /v1/orgs/{id}/counsellors/{pubkey}/profile` | none (the body is the counsellor's signed kind 0) | built |
 | `GET /v1/admin/orgs?status=` | NIP-98, platform admin key | built |
 | `POST /v1/admin/orgs/{id}/approve` \| `/suspend` | NIP-98, platform admin key | built |
-| `POST /v1/disbursements` + `Idempotency-Key` | NIP-98, org or counsellor | next |
-| `POST /v1/disbursements/{id}/invoice` \| `/paying` \| `/proof` \| `/cancel` | NIP-98 | next |
-| `GET /v1/disbursements?state=` | NIP-98, own org only | next |
+| `PUT /v1/admin/orgs/{id}/disbursement-limits` | NIP-98, platform admin key | built |
+| `POST /v1/disbursements` + `Idempotency-Key` | NIP-98, approved org or current counsellor | built |
+| `POST /v1/disbursements/{id}/invoice` | NIP-98, org or current counsellor | built |
+| `POST /v1/disbursements/{id}/paying` \| `/proof` \| `/cancel` | NIP-98, org or current counsellor | built |
+| `GET /v1/disbursements?state=` | NIP-98, org or current counsellor; own orgs only | built |
+| `POST /v1/_mock/settle/{id}` | NIP-98, test environment only | built |
 
 ## 6. The relay
 
@@ -273,7 +287,7 @@ What is absent is the point: no survivor table, no message table, no IP column, 
 | Purge replay-guard ids older than 2 × the NIP-98 window | 1 min | built |
 | NIP-05 re-check; suspend orgs whose domain no longer vouches for their key | 6 h | built |
 | Roster sync from the relay, verify, index | 5 min | planned (the API accepts signed rosters) |
-| Disbursement expiry, delete final invoice strings | 1 min | next |
+| Disbursement expiry, delete final invoice strings | 1 min | built |
 
 ## 9. Deployment
 
@@ -304,7 +318,7 @@ reopened.
 
 ## 11. Tests
 
-Built so far (100 tests, all passing, about 3 seconds):
+Built so far (149 tests, all passing):
 
 - **Events:** property tests with hypothesis. No event whose content or tags change after signing
   may ever verify.
@@ -321,9 +335,11 @@ Built so far (100 tests, all passing, about 3 seconds):
 - **Rosters:** signature and author checks, tampering, stale and replayed rosters, expiry, and a
   hypothesis property test: after any sequence of rosters, only counsellors on the newest one
   are listed.
-- **Platform:** health check, CORS allows only the configured origin, `*` refused, purge job,
-  migrations down and up.
+- **Disbursements:** NIP-98 and org/counsellor authorization, caps, idempotency under retries,
+  BOLT11 signature/network/amount/expiry checks, legal transitions, privacy, retry after expiry,
+  hash-matching preimage handling, and concurrent create/proof races.
+- **Platform:** health check, CORS allows only the configured origin, `*` refused, purge and expiry
+  jobs, migrations down and up.
 
-Next, with disbursements: idempotency, illegal transitions, two simultaneous `proof` calls give
-exactly one `PAID`, and a hypothesis test over random call sequences with two invariants: never
-`PAID` twice, and an organisation's daily total never above its cap.
+Disbursement tests also cover BOLT11 amount round-trips, concurrent create/proof requests, and
+randomized request sequences that must stay within the organisation daily cap.

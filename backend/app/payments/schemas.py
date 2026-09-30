@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 ReasonCode = Literal["transport", "pharmacy", "shelter", "food", "other"]
 
@@ -11,18 +11,27 @@ class DisbursementCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     org_id: uuid.UUID
-    amount_sat: int = Field(gt=0, le=2_100_000_000_000_000)
-    amount_kes: int = Field(gt=0)
+    amount_sat: int = Field(gt=0, le=2_147_483_647)
+    amount_kes: int = Field(gt=0, le=2_147_483_647)
     # Caller-reported FX source, retained for the audit trail. The API does not fetch or certify FX.
     rate_source: str = Field(min_length=1, max_length=120)
+
+    @field_validator("rate_source")
+    @classmethod
+    def trim_rate_source(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("rate_source must not be empty")
+        return value
+
     reason_code: ReasonCode
 
 
 class DisbursementLimits(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    per_payment_cap_sat: int = Field(gt=0, le=2_100_000_000_000_000)
-    daily_cap_sat: int = Field(gt=0, le=2_100_000_000_000_000)
+    per_payment_cap_sat: int = Field(gt=0, le=2_147_483_647)
+    daily_cap_sat: int = Field(gt=0, le=2_147_483_647)
 
     @model_validator(mode="after")
     def daily_cap_covers_single_payment(self):
@@ -44,6 +53,8 @@ class PaymentProof(BaseModel):
 
 
 class DisbursementOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     org_id: uuid.UUID
     amount_sat: int
@@ -58,3 +69,9 @@ class DisbursementOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     paid_at: datetime | None
+
+
+class DisbursementLimitsOut(BaseModel):
+    org_id: uuid.UUID
+    per_payment_cap_sat: int
+    daily_cap_sat: int

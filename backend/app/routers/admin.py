@@ -14,6 +14,8 @@ from app.db.session import get_db
 from app.directory.nip05 import check_nip05
 from app.directory.schemas import OrgOut
 from app.directory.service import Nip05Fetcher, get_org
+from app.payments.schemas import DisbursementLimits, DisbursementLimitsOut
+from app.payments.service import DisbursementError, set_limits
 
 router = APIRouter(prefix="/v1/admin/orgs", tags=["admin"])
 Db = Annotated[Session, Depends(get_db)]
@@ -49,3 +51,24 @@ def suspend(org_id: uuid.UUID, _admin: AdminPubkey, db: Db) -> OrgOut:
     org.status = "suspended"
     db.commit()
     return OrgOut.of(org)
+
+
+@router.put("/{org_id}/disbursement-limits")
+def update_disbursement_limits(
+    org_id: uuid.UUID,
+    limits: DisbursementLimits,
+    _admin: AdminPubkey,
+    db: Db,
+) -> DisbursementLimitsOut:
+    try:
+        org = set_limits(db, org_id, limits)
+        db.commit()
+        db.refresh(org)
+        return DisbursementLimitsOut(
+            org_id=org.id,
+            per_payment_cap_sat=org.per_payment_cap_sat,
+            daily_cap_sat=org.daily_cap_sat,
+        )
+    except DisbursementError as exc:
+        db.rollback()
+        raise HTTPException(exc.status_code, exc.detail) from exc

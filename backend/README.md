@@ -175,6 +175,7 @@ hash of the exact request body in a `payload` tag. Send the base64-encoded event
 | `ADMIN_PUBKEYS` | Comma-separated hex public keys allowed to administer organisations |
 | `NIP05_TIMEOUT_SECONDS` | Timeout for organisation website checks |
 | `NIP05_DEV_BASE_URL` | Local NIP-05 test-site override; only used when `APP_ENV` is `dev` or `test` |
+| `LIGHTNING_NETWORK` | BOLT11 invoice network: `bc` (mainnet), `tb` (testnet), `bcrt` (regtest), or `tbs` (signet) |
 
 Do not commit `.env`, private keys, or generated signed configuration files. The example settings
 are for local development only.
