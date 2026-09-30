@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     # Dev and test only: fetch nostr.json from this base URL instead of https://<domain>.
     # Ignored unless APP_ENV is "dev" or "test".
     nip05_dev_base_url: str | None = None
-    lightning_network: str = "bc"
+    lightning_network: str = "tbs"
 
     @field_validator("cors_origins", mode="before")
     @classmethod

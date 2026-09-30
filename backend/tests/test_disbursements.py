@@ -529,6 +529,7 @@ def test_api_network_setting_is_validated():
 
     from app.settings import Settings
 
+    assert Settings().lightning_network == "bc"  # test configuration is explicit
     assert Settings(lightning_network="tb").lightning_network == "tb"
     with pytest.raises(ValidationError, match="LIGHTNING_NETWORK"):
         Settings(lightning_network="mainnet")
